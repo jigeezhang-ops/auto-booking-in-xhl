@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+收发通_提取信息_*.xlsx
+收发通_提取结果_*.json
+VGM_*_整合结果_*.xlsx

@@ -1,0 +1,4 @@
+interface:
+  display_name: "VGM"
+  short_description: "将 VGM 文件内容按文本格式整合至中转或本港申报模板"
+  default_prompt: "使用 $vgm 将收到的 VGM 文件整合到对应的码头上传模板。"
