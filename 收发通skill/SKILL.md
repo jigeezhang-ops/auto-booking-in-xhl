@@ -36,15 +36,22 @@ Default outputs:
 ## Workflow
 
 1. Scan the target folder recursively for `.xls`, `.xlsx`, and `.pdf` bill files.
-2. Extract the B/L number plus `发货人`、`收货人`、`通知人`.
-3. Normalize values with Unicode `NFKC`, ASCII spaces, and collapsed whitespace.
-4. Infer `通知人` from nearby context when the bill visually implies `same as consignee` or a PDF notify-email block.
-5. Export the result workbook and return its clickable path.
+2. Ignore generated outputs such as `收发通_*.xlsx` and `查询比对_*.xlsx`.
+3. Extract the B/L number plus `发货人`、`收货人`、`通知人`.
+   - For `.xlsx` booking-order templates, inspect `xl/drawings/drawing*.xml` first. Some cutoff files store the party text in DrawingML text boxes, not normal cells.
+   - For the common booking-order template, text boxes anchored at row/column `(13,0)`, `(17,0)`, and `(22,0)` map to shipper, consignee, and notify party.
+   - Use the first non-address/contact line from the text box as the company name.
+   - Prefer the `I4` order number as `提单号` when the file is a booking-order template.
+4. Normalize values with Unicode `NFKC`, ASCII spaces, and collapsed whitespace.
+5. Infer `通知人` from nearby context when the bill visually implies `same as consignee` or a PDF notify-email block.
+6. Export the result workbook and return its clickable path.
+7. Check the printed `records=` count. If the folder contains obvious bill files but the count is `0`, diagnose the workbook layout before starting any website query.
 
 ## Extraction Rules
 
 - Prefer company-like lines containing keywords such as `LLC`, `LTD`, `CO`, `CORP`, `INC`, `LIMITED`, `COMPANY`, `OOO`, or `PTE`.
 - Ignore phone, email, tax, registration, port, vessel, cargo, and container lines as company names.
+- In Excel text boxes, split multi-line content first and keep only the party header line; do not include address, telephone, email, INN/TIN/VAT, or passport lines in the company name.
 - Never leave `通知人` blank after the first pass; retry the local context and infer when justified.
 - Keep source provenance for each row so later query workflows can trace the original bill file.
 
