@@ -7,8 +7,10 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
+from xml.etree import ElementTree as ET
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment
 
 try:
@@ -51,6 +53,14 @@ PARTY_FIELD_MAP = {
     "shipper": "发货人",
     "consignee": "收货人",
     "notify": "通知人",
+}
+
+XDR_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+XLSX_TEXT_BOX_PARTIES = {
+    (13, 0): "shipper",
+    (17, 0): "consignee",
+    (22, 0): "notify",
 }
 
 HEADERS = [
@@ -135,6 +145,98 @@ def extract_binary_strings(path: Path) -> list[str]:
         items.append((match.start(), match.group().decode("utf-16le", "ignore")))
     items.sort(key=lambda item: item[0])
     return [normalized for _, text in items if (normalized := normalize_text(text))]
+
+
+def extract_xlsx_order_no(path: Path) -> str:
+    try:
+        workbook = load_workbook(path, data_only=True, read_only=True)
+        sheet = workbook.active
+        value = normalize_text(str(sheet["I4"].value or ""))
+        if value:
+            return value
+    except Exception:
+        pass
+    return extract_bl_no([], path.name)
+
+
+def split_text_box_lines(texts: list[str]) -> list[str]:
+    lines: list[str] = []
+    for text in texts:
+        for line in text.splitlines():
+            if normalized := normalize_text(line):
+                lines.append(normalized)
+    return lines
+
+
+def first_party_line(lines: list[str]) -> str:
+    for line in lines:
+        upper = line.upper()
+        if upper.startswith(
+            (
+                "ADDRESS:",
+                "ADD:",
+                "TEL",
+                "PHONE",
+                "FAX",
+                "INN:",
+                "TIN:",
+                "VAT:",
+                "E-MAIL:",
+                "EMAIL:",
+                "PASSPORT",
+                "+",
+            )
+        ):
+            continue
+        return line
+    return normalize_text(" ".join(lines))
+
+
+def extract_xlsx_text_box_entries(path: Path) -> list[dict[str, Any]]:
+    """Extract booking-order parties stored in DrawingML text boxes."""
+    try:
+        archive = ZipFile(path)
+    except BadZipFile:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    namespaces = {"xdr": XDR_NS, "a": A_NS}
+    bl_no = extract_xlsx_order_no(path)
+    with archive:
+        drawing_names = sorted(
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/drawings/drawing") and name.endswith(".xml")
+        )
+        for drawing_name in drawing_names:
+            root = ET.fromstring(archive.read(drawing_name))
+            for anchor in list(root):
+                marker = anchor.find("xdr:from", namespaces)
+                if marker is None:
+                    continue
+                row_el = marker.find("xdr:row", namespaces)
+                col_el = marker.find("xdr:col", namespaces)
+                if row_el is None or col_el is None:
+                    continue
+                party_type = XLSX_TEXT_BOX_PARTIES.get((int(row_el.text), int(col_el.text)))
+                if not party_type:
+                    continue
+                lines = split_text_box_lines(
+                    [text.text or "" for text in anchor.findall(".//a:t", namespaces)]
+                )
+                company = first_party_line(lines)
+                if company:
+                    entries.append(
+                        {
+                            "file": path.name,
+                            "bl_no": bl_no,
+                            "party_type": party_type,
+                            "company": company,
+                            "raw_block": lines,
+                            "inferred": "from xlsx text box",
+                        }
+                    )
+    return entries
 
 
 def extract_pdf_lines(path: Path) -> list[str]:
@@ -245,6 +347,8 @@ def iter_bill_files(root: Path) -> list[Path]:
             continue
         if path.name.startswith("~$"):
             continue
+        if path.name.startswith(("收发通_", "查询比对_")):
+            continue
         if path.suffix.lower() not in {".xls", ".xlsx", ".pdf"}:
             continue
         files.append(path)
@@ -257,10 +361,16 @@ def collect_entries(root: Path) -> list[dict[str, Any]]:
     for path in iter_bill_files(root):
         if path.suffix.lower() == ".pdf":
             lines = extract_pdf_lines(path)
+            file_entries = extract_from_lines(lines, path.name)
+        elif path.suffix.lower() == ".xlsx":
+            file_entries = extract_xlsx_text_box_entries(path)
+            lines = extract_binary_strings(path)
+            if not file_entries:
+                file_entries = extract_from_lines(lines, path.name)
         else:
             lines = extract_binary_strings(path)
+            file_entries = extract_from_lines(lines, path.name)
         all_lines_by_source[str(path)] = lines
-        file_entries = extract_from_lines(lines, path.name)
         for entry in file_entries:
             entry["source_path"] = str(path)
             entry["source_folder"] = str(path.parent)
